@@ -11,6 +11,7 @@ from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFacto
 from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 import io
 import warnings
+from collections import Counter
 warnings.filterwarnings('ignore')
 
 # Setup halaman
@@ -157,7 +158,6 @@ with st.sidebar:
             # Kata kunci populer (dari judul)
             all_titles = ' '.join(st.session_state.df['Judul'].tolist())
             words = all_titles.lower().split()
-            from collections import Counter
             common = Counter(words).most_common(5)
             st.markdown("**Top kata kunci:**")
             for word, count in common:
@@ -257,7 +257,8 @@ if st.session_state.data_loaded:
                             st.markdown(f"{score_color} **Skor relevansi:** `{score:.4f}`")
                             
                             # Snippet
-                            snippet = str(row['Text'])[:250] + "..." if len(str(row['Text'])) > 250 else str(row['Text'])
+                            snippet_text = str(row['Text'])
+                            snippet = snippet_text[:250] + "..." if len(snippet_text) > 250 else snippet_text
                             st.markdown(f"📝 {snippet}")
                             st.markdown(f"🔗 [Baca selengkapnya]({row['URL']})", unsafe_allow_html=True)
                             st.markdown("---")
@@ -277,15 +278,19 @@ if st.session_state.data_loaded:
         
         for idx, (_, row) in enumerate(st.session_state.df.head(5).iterrows()):
             with st.container():
-                st.markdown(f"**{idx+1}. {row['Judul'][:100]}**")
-                st.caption(f"🔗 {row['URL'][:80]}...")
+                judul_text = str(row['Judul'])
+                judul_display = judul_text[:100] if len(judul_text) > 100 else judul_text
+                st.markdown(f"**{idx+1}. {judul_display}**")
+                
+                url_text = str(row['URL'])
+                url_display = url_text[:80] + "..." if len(url_text) > 80 else url_text
+                st.caption(f"🔗 {url_display}")
                 st.markdown(f"[📖 Baca berita]({row['URL']})", unsafe_allow_html=True)
                 st.markdown("---")
 
 else:
     # Jika data gagal load
     st.error("❌ Gagal memuat dataset dari GitHub")
+    st.markdown("### 🔧 Solusi:")
     st.markdown("""
-    ### 🔧 Solusi:
-    
     1. **Periksa URL dataset:**
