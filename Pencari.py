@@ -37,9 +37,7 @@ if 'data_loaded' not in st.session_state:
 
 # Konfigurasi dataset dari GitHub
 # GANTI URL INI dengan raw URL dataset Anda dari GitHub
-GITHUB_DATASET_URL = "https://raw.githubusercontent.com/username/repo/main/dataset_berita.xlsx"
-# Atau jika paket CSV
-GITHUB_CSV_URL = "https://raw.githubusercontent.com/username/repo/main/dataset_berita.csv"
+GITHUB_DATASET_URL = "https://github.com/Wenda23/Mesin-Pencari-Berita-Kompas.com/blob/main/dataset_berita.xlsx"
 
 @st.cache_data
 def load_dataset_from_github():
