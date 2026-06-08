@@ -9,26 +9,22 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
 from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
-import io
 import warnings
 from collections import Counter
+
 warnings.filterwarnings('ignore')
 
-# Setup halaman
+# ==================== KONFIGURASI ====================
 st.set_page_config(
     page_title="Mesin Pencari Berita Kompas",
     page_icon="🔍",
     layout="centered"
 )
 
-# Title
-st.title("🔍 Mesin Pencari Berita Kompas.com")
-st.markdown("---")
-
-# === RAW URL DARI GITHUB (OTOMATIS LOAD) ===
+# RAW URL DARI GITHUB (ganti dengan URL dataset Anda)
 RAW_GITHUB_URL = "https://raw.githubusercontent.com/Wenda23/Mesin-Pencari-Berita-Kompas.com/main/dataset_berita.xlsx"
 
-# Inisialisasi session state
+# ==================== SESSION STATE ====================
 if 'df' not in st.session_state:
     st.session_state.df = None
 if 'vectorizer' not in st.session_state:
@@ -40,6 +36,31 @@ if 'data_loaded' not in st.session_state:
 if 'total_berita' not in st.session_state:
     st.session_state.total_berita = 0
 
+# ==================== FUNGSI PREPROCESSING ====================
+def clean_text(text):
+    """Membersihkan teks"""
+    text = str(text).lower()
+    text = re.sub(r'http\S+', '', text)
+    text = re.sub(r'[^a-zA-Z\s]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text
+
+def get_stopword_stemmer():
+    """Mendapatkan objek stopword dan stemmer"""
+    factory_stop = StopWordRemoverFactory()
+    stopword = factory_stop.create_stop_word_remover()
+    factory_stem = StemmerFactory()
+    stemmer = factory_stem.create_stemmer()
+    return stopword, stemmer
+
+def process_text_series(series, stopword, stemmer):
+    """Proses text series menjadi clean text"""
+    cleaned = series.apply(clean_text)
+    cleaned = cleaned.apply(lambda x: stopword.remove(x))
+    cleaned = cleaned.apply(lambda x: stemmer.stem(x))
+    return cleaned
+
+# ==================== FUNGSI LOAD DATASET ====================
 @st.cache_resource
 def load_and_process_dataset():
     """Load dataset dari GitHub dan proses secara otomatis"""
@@ -51,27 +72,12 @@ def load_and_process_dataset():
         required = ['No', 'URL', 'Judul', 'Text']
         if not all(col in df.columns for col in required):
             st.error(f"Dataset harus memiliki kolom: {', '.join(required)}")
+            st.info(f"Kolom yang ditemukan: {list(df.columns)}")
             return None, None, None, False
         
-        # Preprocessing
-        def clean_text(text):
-            text = str(text).lower()
-            text = re.sub(r'http\S+', '', text)
-            text = re.sub(r'[^a-zA-Z\s]', '', text)
-            text = re.sub(r'\s+', ' ', text)
-            return text
-        
-        # Stopword & Stemmer
-        factory_stop = StopWordRemoverFactory()
-        stopword = factory_stop.create_stop_word_remover()
-        
-        factory_stem = StemmerFactory()
-        stemmer = factory_stem.create_stemmer()
-        
         # Proses teks
-        df["clean_text"] = df["Text"].apply(clean_text)
-        df["clean_text"] = df["clean_text"].apply(lambda x: stopword.remove(x))
-        df["clean_text"] = df["clean_text"].apply(lambda x: stemmer.stem(x))
+        stopword, stemmer = get_stopword_stemmer()
+        df["clean_text"] = process_text_series(df["Text"], stopword, stemmer)
         
         # TF-IDF
         processed_paper = df["clean_text"].tolist()
@@ -84,9 +90,36 @@ def load_and_process_dataset():
         st.error(f"Gagal load dataset: {str(e)}")
         return None, None, None, False
 
-# Fungsi query expansion
+def process_uploaded_file(uploaded_file):
+    """Proses file yang diupload manual"""
+    try:
+        df_temp = pd.read_excel(uploaded_file)
+        required = ['No', 'URL', 'Judul', 'Text']
+        
+        if not all(col in df_temp.columns for col in required):
+            st.error(f"Kolom yang dibutuhkan: {', '.join(required)}")
+            st.info(f"Kolom yang ditemukan: {list(df_temp.columns)}")
+            return None, None, None, False
+        
+        # Proses teks
+        stopword, stemmer = get_stopword_stemmer()
+        df_temp["clean_text"] = process_text_series(df_temp["Text"], stopword, stemmer)
+        
+        # TF-IDF
+        processed_paper = df_temp["clean_text"].tolist()
+        vectorizer = TfidfVectorizer(use_idf=True)
+        tfidf_matrix = vectorizer.fit_transform(processed_paper)
+        
+        return df_temp, vectorizer, tfidf_matrix, True
+        
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+        return None, None, None, False
+
+# ==================== FUNGSI QUERY EXPANSION ====================
 @st.cache_data
 def get_synonyms(word):
+    """Mencari sinonim kata dari web"""
     try:
         data = {"q": word}
         encoded = urllib.parse.urlencode(data).encode("utf-8")
@@ -106,6 +139,7 @@ def get_synonyms(word):
         return [word]
 
 def expand_query(query_words):
+    """Memperluas query dengan sinonim"""
     expanded = set()
     expanded.add(' '.join(query_words))
     
@@ -119,12 +153,65 @@ def expand_query(query_words):
     
     return expanded
 
-# LOAD DATA OTOMATIS SAAT APLIKASI PERTAMA KALI DIJALANKAN
+# ==================== FUNGSI PENCARIAN ====================
+def search_documents(query, df, vectorizer, tfidf_matrix):
+    """Mencari dokumen yang relevan dengan query"""
+    stopword, stemmer = get_stopword_stemmer()
+    
+    # Preprocessing query
+    query_lower = query.lower()
+    query_clean = re.sub(r'[^a-zA-Z\s]', '', query_lower)
+    query_no_stop = stopword.remove(query_clean)
+    query_words = [stemmer.stem(w) for w in query_no_stop.split() if w.strip()]
+    
+    if not query_words:
+        return []
+    
+    # Query expansion
+    expanded_queries = expand_query(query_words)
+    
+    # Cari dengan semua query expansion
+    all_results = {}
+    
+    for eq in expanded_queries:
+        try:
+            q_vec = vectorizer.transform([eq])
+            similarities = cosine_similarity(tfidf_matrix, q_vec)
+            
+            for i in range(len(similarities)):
+                score = similarities[i][0]
+                if score > 0.05:
+                    if i not in all_results or all_results[i] < score:
+                        all_results[i] = score
+        except:
+            continue
+    
+    # Urutkan hasil
+    sorted_results = sorted(all_results.items(), key=lambda x: x[1], reverse=True)
+    
+    # Ambil data dokumen
+    results = []
+    for doc_id, score in sorted_results[:30]:
+        row = df.iloc[doc_id]
+        results.append({
+            'judul': row['Judul'],
+            'url': row['URL'],
+            'score': score,
+            'snippet': str(row['Text'])[:250] + '...' if len(str(row['Text'])) > 250 else str(row['Text'])
+        })
+    
+    return results
+
+# ==================== TAMPILAN UTAMA ====================
+st.title("🔍 Mesin Pencari Berita Kompas.com")
+st.markdown("---")
+
+# AUTO LOAD DATASET DARI GITHUB
 if not st.session_state.data_loaded:
     with st.spinner("📡 Mengunduh dan memproses dataset dari GitHub..."):
         df, vectorizer, tfidf_matrix, success = load_and_process_dataset()
         
-        if success:
+        if success and df is not None:
             st.session_state.df = df
             st.session_state.vectorizer = vectorizer
             st.session_state.tfidf_matrix = tfidf_matrix
@@ -132,14 +219,14 @@ if not st.session_state.data_loaded:
             st.session_state.total_berita = len(df)
             st.rerun()
 
-# Sidebar untuk informasi
+# ==================== SIDEBAR ====================
 with st.sidebar:
     st.header("ℹ️ Informasi")
     
     if st.session_state.data_loaded:
         st.success(f"✅ **{st.session_state.total_berita}** berita terindex")
-        st.caption(f"Dataset dari: GitHub")
-        st.caption(f"Update: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}")
+        st.caption(f"📡 Sumber: GitHub")
+        st.caption(f"🕐 Update: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}")
         
         st.markdown("---")
         st.markdown("### 💡 Tips Pencarian")
@@ -153,23 +240,28 @@ with st.sidebar:
         st.markdown("---")
         st.markdown("### 📊 Statistik Cepat")
         
-        # Hitung statistik sederhana
         if st.session_state.df is not None:
-            # Kata kunci populer (dari judul)
             all_titles = ' '.join(st.session_state.df['Judul'].tolist())
             words = all_titles.lower().split()
             common = Counter(words).most_common(5)
             st.markdown("**Top kata kunci:**")
             for word, count in common:
                 st.caption(f"- {word}: {count}x")
+        
+        st.markdown("---")
+        if st.button("🔄 Reset Data", use_container_width=True):
+            st.session_state.data_loaded = False
+            st.cache_resource.clear()
+            st.rerun()
+    
     else:
-        st.error("❌ Gagal memuat data")
-        st.info("Pastikan file dataset_berita.xlsx ada di repository GitHub")
+        st.error("❌ Gagal memuat data otomatis")
+        st.info("Silakan upload manual di bawah")
     
     st.markdown("---")
     st.caption("© 2024 Mesin Pencari Berita Kompas.com")
 
-# Main content
+# ==================== MAIN CONTENT ====================
 if st.session_state.data_loaded:
     # Search box
     st.markdown("### 🔎 Cari Berita")
@@ -200,72 +292,36 @@ if st.session_state.data_loaded:
     # Proses pencarian
     if search_clicked and query:
         with st.spinner("🔍 Mencari berita yang relevan..."):
-            # Preprocessing query
-            factory_stop = StopWordRemoverFactory()
-            stopword = factory_stop.create_stop_word_remover()
-            factory_stem = StemmerFactory()
-            stemmer = factory_stem.create_stemmer()
+            results = search_documents(
+                query, 
+                st.session_state.df, 
+                st.session_state.vectorizer, 
+                st.session_state.tfidf_matrix
+            )
+        
+        if results:
+            st.success(f"✅ Ditemukan {len(results)} berita relevan untuk: **{query}**")
+            st.markdown("---")
             
-            # Proses query
-            query_lower = query.lower()
-            query_clean = re.sub(r'[^a-zA-Z\s]', '', query_lower)
-            query_no_stop = stopword.remove(query_clean)
-            query_words = [stemmer.stem(w) for w in query_no_stop.split() if w.strip()]
-            
-            if query_words:
-                # Query expansion
-                expanded_queries = expand_query(query_words)
-                
-                # Cari dengan semua query expansion
-                all_results = {}
-                
-                for eq in expanded_queries:
-                    try:
-                        q_vec = st.session_state.vectorizer.transform([eq])
-                        similarities = cosine_similarity(st.session_state.tfidf_matrix, q_vec)
-                        
-                        for i in range(len(similarities)):
-                            score = similarities[i][0]
-                            if score > 0.05:
-                                if i not in all_results or all_results[i] < score:
-                                    all_results[i] = score
-                    except:
-                        continue
-                
-                # Urutkan hasil
-                sorted_results = sorted(all_results.items(), key=lambda x: x[1], reverse=True)
-                
-                if sorted_results:
-                    st.success(f"✅ Ditemukan {len(sorted_results)} berita relevan untuk: **{query}**")
-                    st.markdown("---")
+            # Tampilkan hasil
+            for idx, result in enumerate(results, 1):
+                with st.container():
+                    # Warna skor berdasarkan relevansi
+                    if result['score'] >= 0.3:
+                        score_color = "🟢"
+                    elif result['score'] >= 0.15:
+                        score_color = "🟡"
+                    else:
+                        score_color = "🟠"
                     
-                    # Tampilkan hasil
-                    for idx, (doc_id, score) in enumerate(sorted_results[:30], 1):
-                        row = st.session_state.df.iloc[doc_id]
-                        
-                        with st.container():
-                            # Warna skor berdasarkan relevansi
-                            if score >= 0.3:
-                                score_color = "🟢"
-                            elif score >= 0.15:
-                                score_color = "🟡"
-                            else:
-                                score_color = "🟠"
-                            
-                            st.markdown(f"**{idx}. {row['Judul']}**")
-                            st.caption(f"🔗 {row['URL']}")
-                            st.markdown(f"{score_color} **Skor relevansi:** `{score:.4f}`")
-                            
-                            # Snippet
-                            snippet_text = str(row['Text'])
-                            snippet = snippet_text[:250] + "..." if len(snippet_text) > 250 else snippet_text
-                            st.markdown(f"📝 {snippet}")
-                            st.markdown(f"🔗 [Baca selengkapnya]({row['URL']})", unsafe_allow_html=True)
-                            st.markdown("---")
-                else:
-                    st.warning(f"😔 Tidak ada berita yang cocok dengan '{query}'. Coba kata kunci lain.")
-            else:
-                st.warning("⚠️ Masukkan kata kunci yang valid")
+                    st.markdown(f"**{idx}. {result['judul']}**")
+                    st.caption(f"🔗 {result['url']}")
+                    st.markdown(f"{score_color} **Skor relevansi:** `{result['score']:.4f}`")
+                    st.markdown(f"📝 {result['snippet']}")
+                    st.markdown(f"🔗 [Baca selengkapnya]({result['url']})", unsafe_allow_html=True)
+                    st.markdown("---")
+        else:
+            st.warning(f"😔 Tidak ada berita yang cocok dengan '{query}'. Coba kata kunci lain.")
     
     elif search_clicked and not query:
         st.warning("⚠️ Masukkan kata kunci pencarian terlebih dahulu")
@@ -279,18 +335,65 @@ if st.session_state.data_loaded:
         for idx, (_, row) in enumerate(st.session_state.df.head(5).iterrows()):
             with st.container():
                 judul_text = str(row['Judul'])
-                judul_display = judul_text[:100] if len(judul_text) > 100 else judul_text
+                judul_display = judul_text[:100] + "..." if len(judul_text) > 100 else judul_text
                 st.markdown(f"**{idx+1}. {judul_display}**")
-                
-                url_text = str(row['URL'])
-                url_display = url_text[:80] + "..." if len(url_text) > 80 else url_text
-                st.caption(f"🔗 {url_display}")
+                st.caption(f"🔗 {str(row['URL'])[:80]}...")
                 st.markdown(f"[📖 Baca berita]({row['URL']})", unsafe_allow_html=True)
                 st.markdown("---")
 
 else:
-    # Jika data gagal load
-    st.error("❌ Gagal memuat dataset dari GitHub")
-    st.markdown("### 🔧 Solusi:")
+    # Jika auto-load gagal, tampilkan opsi upload manual
+    st.warning("⚠️ Auto-load dari GitHub gagal. Silakan upload dataset manual.")
+    
+    st.markdown("### 📋 Format File Excel yang Dibutuhkan:")
     st.markdown("""
-    1. **Periksa URL dataset:**
+    File Excel harus memiliki **4 kolom**:
+    
+    | No | URL | Judul | Text |
+    |----|-----|-------|------|
+    | 1 | https://... | Judul berita | Isi berita lengkap... |
+    | 2 | https://... | Judul berita | Isi berita lengkap... |
+    """)
+    
+    # Tombol download contoh file
+    sample_df = pd.DataFrame({
+        'No': [1, 2],
+        'URL': ['https://kompas.com/berita1', 'https://kompas.com/berita2'],
+        'Judul': ['Contoh Judul Berita 1', 'Contoh Judul Berita 2'],
+        'Text': ['Isi berita lengkap contoh 1...', 'Isi berita lengkap contoh 2...']
+    })
+    
+    import io
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        sample_df.to_excel(writer, index=False)
+    excel_data = output.getvalue()
+    
+    st.download_button(
+        label="📥 Download Contoh File Excel",
+        data=excel_data,
+        file_name="contoh_dataset_berita.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    
+    st.markdown("---")
+    st.markdown("### 📂 Upload Dataset Manual:")
+    
+    uploaded_file = st.file_uploader(
+        "Pilih file Excel",
+        type=['xlsx', 'xls'],
+        help="Upload file Excel dengan kolom: No, URL, Judul, Text"
+    )
+    
+    if uploaded_file is not None:
+        with st.spinner("Memproses data..."):
+            df, vectorizer, tfidf_matrix, success = process_uploaded_file(uploaded_file)
+            
+            if success and df is not None:
+                st.session_state.df = df
+                st.session_state.vectorizer = vectorizer
+                st.session_state.tfidf_matrix = tfidf_matrix
+                st.session_state.data_loaded = True
+                st.session_state.total_berita = len(df)
+                st.success(f"✅ Berhasil! {len(df)} berita siap dicari")
+                st.rerun()
