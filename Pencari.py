@@ -12,6 +12,7 @@ from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFacto
 from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 from sentence_transformers import SentenceTransformer
 import time
+import os
 
 # Setup halaman
 st.set_page_config(
@@ -80,6 +81,13 @@ st.markdown("""
         padding: 1rem;
         border-radius: 10px;
     }
+    .upload-area {
+        border: 2px dashed #667eea;
+        border-radius: 10px;
+        padding: 2rem;
+        text-align: center;
+        background: #f8f9fa;
+    }
     @media (max-width: 768px) {
         .result-title {
             font-size: 1rem;
@@ -89,34 +97,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Inisialisasi session state
-if 'initialized' not in st.session_state:
-    st.session_state.initialized = False
+if 'df' not in st.session_state:
     st.session_state.df = None
+if 'vectorizer' not in st.session_state:
     st.session_state.vectorizer = None
+if 'tfidf_matrix' not in st.session_state:
     st.session_state.tfidf_matrix = None
+if 'processed_paper' not in st.session_state:
     st.session_state.processed_paper = None
-
-@st.cache_resource
-def load_data():
-    """Load data yang sudah diproses"""
-    try:
-        # Coba load dari file yang sudah ada
-        df = pd.read_excel("dataset_berita.xlsx")
-        
-        # Load processed papers
-        with open("processed_paper.pkl", "rb") as f:
-            processed_paper = pickle.load(f)
-        
-        # Load vectorizer
-        with open("vectorizer.pkl", "rb") as f:
-            vectorizer = pickle.load(f)
-            tfidf_matrix = vectorizer.transform(processed_paper)
-        
-        return df, vectorizer, tfidf_matrix, processed_paper
-    except:
-        # Jika file belum ada, proses ulang
-        st.warning("Data belum tersedia. Silakan upload file dataset_berita.xlsx")
-        return None, None, None, None
+if 'data_loaded' not in st.session_state:
+    st.session_state.data_loaded = False
 
 @st.cache_resource
 def load_preprocessing_components():
@@ -137,6 +127,31 @@ def load_semantic_model():
         return model
     except:
         return None
+
+def process_dataset(df):
+    """Proses dataset untuk indexing"""
+    with st.spinner("Memproses dataset..."):
+        # Preprocessing teks
+        def clean_text(text):
+            text = str(text).lower()
+            text = re.sub(r'http\S+', '', text)
+            text = re.sub(r'[^a-zA-Z\s]', '', text)
+            text = re.sub(r'\s+', ' ', text)
+            return text
+        
+        stopword, stemmer = load_preprocessing_components()
+        
+        # Bersihkan teks
+        df["clean_text"] = df["Text"].apply(clean_text)
+        df["clean_text"] = df["clean_text"].apply(lambda x: stopword.remove(x))
+        df["clean_text"] = df["clean_text"].apply(lambda x: stemmer.stem(x))
+        
+        # Buat TF-IDF matrix
+        processed_paper = df["clean_text"].tolist()
+        vectorizer = TfidfVectorizer(use_idf=True)
+        tfidf_matrix = vectorizer.fit_transform(processed_paper)
+        
+        return df, vectorizer, tfidf_matrix, processed_paper
 
 def preprocess_query(query, stopword, stemmer):
     """Preprocessing query"""
@@ -238,7 +253,7 @@ def search_documents(query, df, vectorizer, tfidf_matrix, processed_paper, stopw
             
             for i in range(len(result)):
                 score = result[i][0]
-                if score > 0.05:  # Threshold rendah untuk lebih banyak hasil
+                if score > 0.05:
                     all_results.append({
                         'index': i,
                         'score': score,
@@ -264,7 +279,7 @@ def search_documents(query, df, vectorizer, tfidf_matrix, processed_paper, stopw
                 'judul': df['Judul'].iloc[i],
                 'url': df['URL'].iloc[i],
                 'score': item['score'],
-                'snippet': df['Text'].iloc[i][:300] + '...' if len(df['Text'].iloc[i]) > 300 else df['Text'].iloc[i]
+                'snippet': str(df['Text'].iloc[i])[:300] + '...' if len(str(df['Text'].iloc[i])) > 300 else str(df['Text'].iloc[i])
             })
     
     return results
@@ -278,23 +293,69 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Load data dan komponen
-    with st.spinner("Memuat sistem pencarian..."):
-        df, vectorizer, tfidf_matrix, processed_paper = load_data()
-        stopword, stemmer = load_preprocessing_components()
-        semantic_model = load_semantic_model()
+    # Load komponen preprocessing
+    stopword, stemmer = load_preprocessing_components()
+    semantic_model = load_semantic_model()
     
-    # Sidebar
+    # Sidebar untuk upload dataset
     with st.sidebar:
         st.markdown("""
         <div class="sidebar-content">
-            <h3>📊 Statistik</h3>
+            <h3>📂 Upload Dataset</h3>
         </div>
         """, unsafe_allow_html=True)
         
-        if df is not None:
-            st.metric("Jumlah Berita", len(df))
-            st.metric("Topik Berita", df['Judul'].nunique())
+        # Upload file Excel
+        uploaded_file = st.file_uploader(
+            "Pilih file dataset berita (format Excel)",
+            type=['xlsx', 'xls'],
+            help="File harus memiliki kolom: No, URL, Judul, Text"
+        )
+        
+        if uploaded_file is not None:
+            try:
+                # Baca file Excel
+                df_temp = pd.read_excel(uploaded_file)
+                
+                # Cek kolom yang diperlukan
+                required_columns = ['No', 'URL', 'Judul', 'Text']
+                if all(col in df_temp.columns for col in required_columns):
+                    if st.button("🔄 Proses Dataset", use_container_width=True):
+                        # Proses dataset
+                        df, vectorizer, tfidf_matrix, processed_paper = process_dataset(df_temp)
+                        
+                        # Simpan ke session state
+                        st.session_state.df = df
+                        st.session_state.vectorizer = vectorizer
+                        st.session_state.tfidf_matrix = tfidf_matrix
+                        st.session_state.processed_paper = processed_paper
+                        st.session_state.data_loaded = True
+                        
+                        st.success(f"✅ Berhasil memproses {len(df)} berita!")
+                        st.balloons()
+                else:
+                    st.error(f"❌ File harus memiliki kolom: {', '.join(required_columns)}")
+                    st.info("Contoh format: No, URL, Judul, Text")
+            
+            except Exception as e:
+                st.error(f"Error membaca file: {str(e)}")
+        
+        st.markdown("---")
+        
+        # Tampilkan statistik jika data sudah loaded
+        if st.session_state.data_loaded and st.session_state.df is not None:
+            st.markdown("""
+            <div class="sidebar-content">
+                <h3>📊 Statistik Dataset</h3>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.metric("Jumlah Berita", len(st.session_state.df))
+            st.metric("Topik Unik", st.session_state.df['Judul'].nunique())
+            
+            # Preview dataset
+            with st.expander("📋 Preview Dataset"):
+                st.dataframe(st.session_state.df[['No', 'Judul']].head(5), use_container_width=True)
         
         st.markdown("---")
         st.markdown("""
@@ -316,68 +377,110 @@ def main():
     col1, col2, col3 = st.columns([1, 3, 1])
     
     with col2:
-        st.markdown('<div class="search-container">', unsafe_allow_html=True)
-        
-        # Search box
-        query = st.text_input(
-            "🔎 Masukkan kata kunci pencarian",
-            placeholder="Contoh: harga emas, politik indonesia, teknologi terbaru...",
-            label_visibility="collapsed"
-        )
-        
-        search_button = st.button("Cari Berita", type="primary", use_container_width=True)
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Proses pencarian
-    if search_button and query:
-        if df is not None and vectorizer is not None:
-            with st.spinner("🔍 Mencari berita yang relevan..."):
-                time.sleep(0.5)
-                results = search_documents(query, df, vectorizer, tfidf_matrix, processed_paper, stopword, stemmer, semantic_model)
+        # Cek apakah data sudah diupload
+        if not st.session_state.data_loaded:
+            st.info("📌 **Selamat datang!** Silakan upload dataset berita di sidebar kiri untuk memulai pencarian.")
             
-            if results:
-                st.success(f"✅ Ditemukan {len(results)} berita relevan")
+            # Tampilkan contoh format
+            with st.expander("📖 Lihat Contoh Format Dataset"):
+                st.markdown("""
+                File Excel harus memiliki kolom:
+                - **No**: Nomor urut berita
+                - **URL**: Link lengkap berita
+                - **Judul**: Judul berita
+                - **Text**: Isi/konten berita lengkap
                 
-                # Tampilkan hasil
-                for idx, result in enumerate(results, 1):
-                    with st.container():
-                        st.markdown(f"""
-                        <div class="result-card">
-                            <div class="result-title">{idx}. {result['judul']}</div>
-                            <div class="result-url">🔗 {result['url']}</div>
-                            <div class="result-snippet">{result['snippet']}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Tombol untuk membuka link
-                        if st.button(f"Baca Selengkapnya", key=f"btn_{idx}"):
-                            st.markdown(f'<a href="{result["url"]}" target="_blank">Klik di sini untuk membaca berita lengkap</a>', unsafe_allow_html=True)
-            else:
-                st.warning("😔 Tidak ditemukan berita yang sesuai. Coba kata kunci lain.")
+                Contoh:
+                | No | URL | Judul | Text |
+                |----|-----|-------|------|
+                | 1 | https://... | Contoh Judul | Isi berita lengkap... |
+                """)
+                
+                # Tombol download contoh
+                sample_df = pd.DataFrame({
+                    'No': [1, 2],
+                    'URL': ['https://example.com/berita1', 'https://example.com/berita2'],
+                    'Judul': ['Contoh Berita 1', 'Contoh Berita 2'],
+                    'Text': ['Ini adalah isi berita contoh 1', 'Ini adalah isi berita contoh 2']
+                })
+                
+                st.download_button(
+                    label="📥 Download Contoh Dataset",
+                    data=sample_df.to_excel(index=False),
+                    file_name="contoh_dataset_berita.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
         else:
-            st.error("❌ Data belum tersedia. Silakan upload file dataset terlebih dahulu.")
-    
-    elif search_button and not query:
-        st.warning("⚠️ Silakan masukkan kata kunci pencarian terlebih dahulu.")
-    
-    # Tampilkan beberapa berita terbaru jika belum mencari
-    if not search_button and df is not None:
-        st.markdown("### 📰 Berita Terbaru")
-        
-        cols = st.columns(2)
-        for idx, (_, row) in enumerate(df.head(6).iterrows()):
-            with cols[idx % 2]:
-                with st.container():
-                    st.markdown(f"""
-                    <div class="result-card">
-                        <div class="result-title">{row['Judul'][:100]}...</div>
-                        <div class="result-url">🔗 {row['URL'][:80]}...</div>
-                    </div>
-                    """, unsafe_allow_html=True)
+            # Search box
+            st.markdown('<div class="search-container">', unsafe_allow_html=True)
+            
+            query = st.text_input(
+                "🔎 Masukkan kata kunci pencarian",
+                placeholder="Contoh: harga emas, politik indonesia, teknologi terbaru...",
+                label_visibility="collapsed"
+            )
+            
+            search_button = st.button("Cari Berita", type="primary", use_container_width=True)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Proses pencarian
+            if search_button and query:
+                with st.spinner("🔍 Mencari berita yang relevan..."):
+                    time.sleep(0.5)
+                    results = search_documents(
+                        query, 
+                        st.session_state.df, 
+                        st.session_state.vectorizer, 
+                        st.session_state.tfidf_matrix,
+                        st.session_state.processed_paper,
+                        stopword, 
+                        stemmer, 
+                        semantic_model
+                    )
+                
+                if results:
+                    st.success(f"✅ Ditemukan {len(results)} berita relevan")
                     
-                    if st.button(f"Baca", key=f"preview_{idx}"):
-                        st.markdown(f'<a href="{row["URL"]}" target="_blank">Klik di sini untuk membaca</a>', unsafe_allow_html=True)
+                    # Tampilkan hasil
+                    for idx, result in enumerate(results, 1):
+                        with st.container():
+                            st.markdown(f"""
+                            <div class="result-card">
+                                <div class="result-title">{idx}. {result['judul']}</div>
+                                <div class="result-url">🔗 {result['url']}</div>
+                                <div class="result-snippet">{result['snippet']}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            col1, col2 = st.columns([1, 4])
+                            with col1:
+                                if st.button(f"📖 Baca", key=f"btn_{idx}"):
+                                    st.markdown(f'<a href="{result["url"]}" target="_blank">Klik di sini untuk membaca berita lengkap</a>', unsafe_allow_html=True)
+                else:
+                    st.warning("😔 Tidak ditemukan berita yang sesuai. Coba kata kunci lain.")
+            
+            elif search_button and not query:
+                st.warning("⚠️ Silakan masukkan kata kunci pencarian terlebih dahulu.")
+            
+            # Tampilkan beberapa berita terbaru jika belum mencari
+            if not search_button and st.session_state.df is not None:
+                st.markdown("### 📰 Berita Terbaru dalam Dataset")
+                
+                cols = st.columns(2)
+                for idx, (_, row) in enumerate(st.session_state.df.head(6).iterrows()):
+                    with cols[idx % 2]:
+                        with st.container():
+                            judul_singkat = row['Judul'][:100] + '...' if len(str(row['Judul'])) > 100 else row['Judul']
+                            st.markdown(f"""
+                            <div class="result-card">
+                                <div class="result-title">{judul_singkat}</div>
+                                <div class="result-url">🔗 {row['URL'][:80]}...</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            if st.button(f"Baca", key=f"preview_{idx}"):
+                                st.markdown(f'<a href="{row["URL"]}" target="_blank">Klik di sini untuk membaca</a>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
