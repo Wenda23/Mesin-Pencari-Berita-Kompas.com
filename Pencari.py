@@ -21,7 +21,7 @@ st.set_page_config(
     layout="centered"
 )
 
-# RAW URL DARI GITHUB (ganti dengan URL dataset Anda)
+# RAW URL DARI GITHUB
 RAW_GITHUB_URL = "https://raw.githubusercontent.com/Wenda23/Mesin-Pencari-Berita-Kompas.com/main/dataset_berita.xlsx"
 
 # ==================== SESSION STATE ====================
@@ -72,7 +72,6 @@ def load_and_process_dataset():
         required = ['No', 'URL', 'Judul', 'Text']
         if not all(col in df.columns for col in required):
             st.error(f"Dataset harus memiliki kolom: {', '.join(required)}")
-            st.info(f"Kolom yang ditemukan: {list(df.columns)}")
             return None, None, None, False
         
         # Proses teks
@@ -98,7 +97,6 @@ def process_uploaded_file(uploaded_file):
         
         if not all(col in df_temp.columns for col in required):
             st.error(f"Kolom yang dibutuhkan: {', '.join(required)}")
-            st.info(f"Kolom yang ditemukan: {list(df_temp.columns)}")
             return None, None, None, False
         
         # Proses teks
@@ -219,47 +217,24 @@ if not st.session_state.data_loaded:
             st.session_state.total_berita = len(df)
             st.rerun()
 
-# ==================== SIDEBAR ====================
+# ==================== SIDEBAR (DIPERKECIL/DIHAPUS) ====================
 with st.sidebar:
-    st.header("ℹ️ Informasi")
+    st.header("⚙️ Pengaturan")
     
     if st.session_state.data_loaded:
-        st.success(f"✅ **{st.session_state.total_berita}** berita terindex")
-        st.caption(f"📡 Sumber: GitHub")
-        st.caption(f"🕐 Update: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}")
+        # Hanya tampilkan jumlah berita saja (tanpa tips)
+        st.metric("📊 Jumlah Berita", f"{st.session_state.total_berita}")
         
         st.markdown("---")
-        st.markdown("### 💡 Tips Pencarian")
-        st.markdown("""
-        - Gunakan kata kunci spesifik
-        - Sistem otomatis mencari sinonim
-        - Hasil diurutkan berdasarkan relevansi
-        - Semakin panjang query, semakin akurat
-        """)
         
-        st.markdown("---")
-        st.markdown("### 📊 Statistik Cepat")
-        
-        if st.session_state.df is not None:
-            all_titles = ' '.join(st.session_state.df['Judul'].tolist())
-            words = all_titles.lower().split()
-            common = Counter(words).most_common(5)
-            st.markdown("**Top kata kunci:**")
-            for word, count in common:
-                st.caption(f"- {word}: {count}x")
-        
-        st.markdown("---")
+        # Tombol reset data
         if st.button("🔄 Reset Data", use_container_width=True):
             st.session_state.data_loaded = False
             st.cache_resource.clear()
             st.rerun()
     
-    else:
-        st.error("❌ Gagal memuat data otomatis")
-        st.info("Silakan upload manual di bawah")
-    
     st.markdown("---")
-    st.caption("© 2024 Mesin Pencari Berita Kompas.com")
+    st.caption("© 2024 Mesin Pencari Berita")
 
 # ==================== MAIN CONTENT ====================
 if st.session_state.data_loaded:
@@ -318,7 +293,7 @@ if st.session_state.data_loaded:
                     st.caption(f"🔗 {result['url']}")
                     st.markdown(f"{score_color} **Skor relevansi:** `{result['score']:.4f}`")
                     st.markdown(f"📝 {result['snippet']}")
-                    st.markdown(f"🔗 [Baca selengkapnya]({result['url']})", unsafe_allow_html=True)
+                    st.markdown(f"[📖 Baca selengkapnya]({result['url']})", unsafe_allow_html=True)
                     st.markdown("---")
         else:
             st.warning(f"😔 Tidak ada berita yang cocok dengan '{query}'. Coba kata kunci lain.")
@@ -328,8 +303,7 @@ if st.session_state.data_loaded:
     
     # Tampilkan beberapa berita terbaru jika belum mencari
     if not search_clicked:
-        st.markdown("### 📰 Berita Terbaru dalam Database")
-        st.caption(f"Menampilkan 5 dari {st.session_state.total_berita} berita yang tersedia")
+        st.markdown("### 📰 Berita Terbaru")
         st.markdown("---")
         
         for idx, (_, row) in enumerate(st.session_state.df.head(5).iterrows()):
