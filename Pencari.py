@@ -12,6 +12,7 @@ from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFacto
 from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 from sentence_transformers import SentenceTransformer
 import time
+import io
 import os
 
 # Setup halaman
@@ -62,15 +63,6 @@ st.markdown("""
         margin-bottom: 0.75rem;
         word-break: break-all;
     }
-    .result-score {
-        display: inline-block;
-        padding: 0.25rem 0.75rem;
-        background: #e8f5e9;
-        color: #2e7d32;
-        border-radius: 20px;
-        font-size: 0.8rem;
-        font-weight: 500;
-    }
     .result-snippet {
         color: #555;
         margin-top: 0.75rem;
@@ -111,13 +103,17 @@ if 'data_loaded' not in st.session_state:
 @st.cache_resource
 def load_preprocessing_components():
     """Load komponen preprocessing"""
-    factory_stop = StopWordRemoverFactory()
-    stopword = factory_stop.create_stop_word_remover()
-    
-    factory_stem = StemmerFactory()
-    stemmer = factory_stem.create_stemmer()
-    
-    return stopword, stemmer
+    try:
+        factory_stop = StopWordRemoverFactory()
+        stopword = factory_stop.create_stop_word_remover()
+        
+        factory_stem = StemmerFactory()
+        stemmer = factory_stem.create_stemmer()
+        
+        return stopword, stemmer
+    except Exception as e:
+        st.error(f"Error loading preprocessing components: {str(e)}")
+        return None, None
 
 @st.cache_resource
 def load_semantic_model():
@@ -125,54 +121,75 @@ def load_semantic_model():
     try:
         model = SentenceTransformer('firqaaa/indo-sentence-bert-base')
         return model
-    except:
+    except Exception as e:
+        st.warning(f"Semantic model tidak dapat dimuat: {str(e)}")
         return None
 
 def process_dataset(df):
     """Proses dataset untuk indexing"""
     with st.spinner("Memproses dataset..."):
-        # Preprocessing teks
-        def clean_text(text):
-            text = str(text).lower()
-            text = re.sub(r'http\S+', '', text)
-            text = re.sub(r'[^a-zA-Z\s]', '', text)
-            text = re.sub(r'\s+', ' ', text)
-            return text
-        
-        stopword, stemmer = load_preprocessing_components()
-        
-        # Bersihkan teks
-        df["clean_text"] = df["Text"].apply(clean_text)
-        df["clean_text"] = df["clean_text"].apply(lambda x: stopword.remove(x))
-        df["clean_text"] = df["clean_text"].apply(lambda x: stemmer.stem(x))
-        
-        # Buat TF-IDF matrix
-        processed_paper = df["clean_text"].tolist()
-        vectorizer = TfidfVectorizer(use_idf=True)
-        tfidf_matrix = vectorizer.fit_transform(processed_paper)
-        
-        return df, vectorizer, tfidf_matrix, processed_paper
+        try:
+            # Preprocessing teks
+            def clean_text(text):
+                text = str(text).lower()
+                text = re.sub(r'http\S+', '', text)
+                text = re.sub(r'[^a-zA-Z\s]', '', text)
+                text = re.sub(r'\s+', ' ', text)
+                return text
+            
+            stopword, stemmer = load_preprocessing_components()
+            
+            if stopword is None or stemmer is None:
+                st.error("Gagal memuat komponen preprocessing")
+                return None, None, None, None
+            
+            # Bersihkan teks
+            df["clean_text"] = df["Text"].apply(clean_text)
+            df["clean_text"] = df["clean_text"].apply(lambda x: stopword.remove(x))
+            df["clean_text"] = df["clean_text"].apply(lambda x: stemmer.stem(x))
+            
+            # Buat TF-IDF matrix
+            processed_paper = df["clean_text"].tolist()
+            vectorizer = TfidfVectorizer(use_idf=True, max_features=5000)
+            tfidf_matrix = vectorizer.fit_transform(processed_paper)
+            
+            return df, vectorizer, tfidf_matrix, processed_paper
+        except Exception as e:
+            st.error(f"Error processing dataset: {str(e)}")
+            return None, None, None, None
 
 def preprocess_query(query, stopword, stemmer):
     """Preprocessing query"""
-    query = query.lower()
-    query = re.sub(r'[^a-zA-Z\s]', '', query)
-    query = stopword.remove(query)
-    query = query.split()
-    query = [stemmer.stem(w) for w in query]
-    return query
+    try:
+        query = query.lower()
+        query = re.sub(r'[^a-zA-Z\s]', '', query)
+        query = stopword.remove(query)
+        query = query.split()
+        query = [stemmer.stem(w) for w in query]
+        return query
+    except Exception as e:
+        st.error(f"Error preprocessing query: {str(e)}")
+        return []
 
 def get_sinonim(kata):
     """Ambil sinonim dari web"""
     try:
         data = {"q": kata}
         encoded_data = urllib.parse.urlencode(data).encode("utf-8")
-        content = urllib.request.urlopen("http://www.sinonimkata.com/search.php", encoded_data, timeout=5)
+        req = urllib.request.Request(
+            "http://www.sinonimkata.com/search.php", 
+            data=encoded_data,
+            headers={'User-Agent': 'Mozilla/5.0'}
+        )
+        content = urllib.request.urlopen(req, timeout=5)
         soup = BeautifulSoup(content, 'html.parser')
-        synonym = soup.find('td', attrs={'width': '90%'}).find_all('a')
-        synonym = [x.getText() for x in synonym]
-        return [kata] + synonym[:5]
-    except:
+        synonym = soup.find('td', attrs={'width': '90%'})
+        if synonym:
+            synonym = synonym.find_all('a')
+            synonym = [x.getText() for x in synonym]
+            return [kata] + synonym[:5]
+        return [kata]
+    except Exception as e:
         return [kata]
 
 def filter_sinonim_semantik(kata, sinonim_list, query_words, model, top_n=3):
@@ -193,96 +210,105 @@ def filter_sinonim_semantik(kata, sinonim_list, query_words, model, top_n=3):
                 continue
             
             query_variasi = query_words.copy()
-            query_variasi[idx_kata] = s
-            q_variasi_str = " ".join(query_variasi)
-            
-            emb_variasi = model.encode([q_variasi_str])
-            skor = cosine_similarity(emb_asli, emb_variasi)[0][0]
-            
-            if skor >= 0.6:
-                hasil.append((s, skor))
+            if idx_kata < len(query_variasi):
+                query_variasi[idx_kata] = s
+                q_variasi_str = " ".join(query_variasi)
+                
+                emb_variasi = model.encode([q_variasi_str])
+                skor = cosine_similarity(emb_asli, emb_variasi)[0][0]
+                
+                if skor >= 0.6:
+                    hasil.append((s, skor))
         
         hasil = sorted(hasil, key=lambda x: x[1], reverse=True)
         return [x[0] for x in hasil[:top_n]]
-    except:
+    except Exception as e:
         return sinonim_list[:top_n]
 
 def query_expansion(query_words, stopword, stemmer, model=None):
     """Query expansion otomatis"""
-    list_synonym = []
-    
-    for kata in query_words:
-        sinonim = get_sinonim(kata)
-        if model:
-            sinonim = filter_sinonim_semantik(kata, sinonim, query_words, model)
-        else:
-            sinonim = sinonim[:3]
-        list_synonym.append(sinonim)
-    
-    qs = set()
-    
-    # Kombinasi sinonim
-    for i, kata in enumerate(query_words):
-        for s in list_synonym[i]:
-            kombinasi = query_words.copy()
-            kombinasi[i] = s
-            qs.add(' '.join(kombinasi))
-    
-    qs.add(' '.join(query_words))
-    
-    return qs
+    try:
+        list_synonym = []
+        
+        for kata in query_words:
+            sinonim = get_sinonim(kata)
+            if model:
+                sinonim = filter_sinonim_semantik(kata, sinonim, query_words, model)
+            else:
+                sinonim = sinonim[:3]
+            list_synonym.append(sinonim)
+        
+        qs = set()
+        
+        # Kombinasi sinonim
+        for i, kata in enumerate(query_words):
+            for s in list_synonym[i]:
+                kombinasi = query_words.copy()
+                if i < len(kombinasi):
+                    kombinasi[i] = s
+                    qs.add(' '.join(kombinasi))
+        
+        qs.add(' '.join(query_words))
+        
+        return qs
+    except Exception as e:
+        return {' '.join(query_words)}
 
 def search_documents(query, df, vectorizer, tfidf_matrix, processed_paper, stopword, stemmer, model=None):
     """Fungsi pencarian utama"""
-    # Preprocessing query
-    processed_query = preprocess_query(query, stopword, stemmer)
-    
-    if not processed_query:
+    try:
+        # Preprocessing query
+        processed_query = preprocess_query(query, stopword, stemmer)
+        
+        if not processed_query:
+            return []
+        
+        # Query expansion
+        expanded_queries = query_expansion(processed_query, stopword, stemmer, model)
+        
+        # Pencarian dengan semua query yang sudah diexpand
+        all_results = []
+        
+        for q in expanded_queries:
+            try:
+                q_vec = vectorizer.transform([q])
+                result = cosine_similarity(tfidf_matrix, q_vec)
+                
+                for i in range(len(result)):
+                    score = result[i][0]
+                    if score > 0.05:
+                        all_results.append({
+                            'index': i,
+                            'score': score,
+                            'query_used': q
+                        })
+            except:
+                continue
+        
+        # Hapus duplikat dan urutkan berdasarkan score
+        unique_results = {}
+        for item in all_results:
+            if item['index'] not in unique_results or unique_results[item['index']]['score'] < item['score']:
+                unique_results[item['index']] = item
+        
+        sorted_results = sorted(unique_results.values(), key=lambda x: x['score'], reverse=True)
+        
+        # Ambil data dokumen
+        results = []
+        for item in sorted_results[:50]:  # Batasi 50 hasil teratas
+            i = item['index']
+            if i < len(df):
+                results.append({
+                    'judul': df['Judul'].iloc[i],
+                    'url': df['URL'].iloc[i],
+                    'score': item['score'],
+                    'snippet': str(df['Text'].iloc[i])[:300] + '...' if len(str(df['Text'].iloc[i])) > 300 else str(df['Text'].iloc[i])
+                })
+        
+        return results
+    except Exception as e:
+        st.error(f"Error searching documents: {str(e)}")
         return []
-    
-    # Query expansion
-    expanded_queries = query_expansion(processed_query, stopword, stemmer, model)
-    
-    # Pencarian dengan semua query yang sudah diexpand
-    all_results = []
-    
-    for q in expanded_queries:
-        try:
-            q_vec = vectorizer.transform([q])
-            result = cosine_similarity(tfidf_matrix, q_vec)
-            
-            for i in range(len(result)):
-                score = result[i][0]
-                if score > 0.05:
-                    all_results.append({
-                        'index': i,
-                        'score': score,
-                        'query_used': q
-                    })
-        except:
-            continue
-    
-    # Hapus duplikat dan urutkan berdasarkan score
-    unique_results = {}
-    for item in all_results:
-        if item['index'] not in unique_results or unique_results[item['index']]['score'] < item['score']:
-            unique_results[item['index']] = item
-    
-    sorted_results = sorted(unique_results.values(), key=lambda x: x['score'], reverse=True)
-    
-    # Ambil data dokumen
-    results = []
-    for item in sorted_results:
-        i = item['index']
-        if i < len(df):
-            results.append({
-                'judul': df['Judul'].iloc[i],
-                'url': df['URL'].iloc[i],
-                'score': item['score'],
-                'snippet': str(df['Text'].iloc[i])[:300] + '...' if len(str(df['Text'].iloc[i])) > 300 else str(df['Text'].iloc[i])
-            })
-    
-    return results
 
 def main():
     # Header
@@ -324,15 +350,16 @@ def main():
                         # Proses dataset
                         df, vectorizer, tfidf_matrix, processed_paper = process_dataset(df_temp)
                         
-                        # Simpan ke session state
-                        st.session_state.df = df
-                        st.session_state.vectorizer = vectorizer
-                        st.session_state.tfidf_matrix = tfidf_matrix
-                        st.session_state.processed_paper = processed_paper
-                        st.session_state.data_loaded = True
-                        
-                        st.success(f"✅ Berhasil memproses {len(df)} berita!")
-                        st.balloons()
+                        if df is not None:
+                            # Simpan ke session state
+                            st.session_state.df = df
+                            st.session_state.vectorizer = vectorizer
+                            st.session_state.tfidf_matrix = tfidf_matrix
+                            st.session_state.processed_paper = processed_paper
+                            st.session_state.data_loaded = True
+                            
+                            st.success(f"✅ Berhasil memproses {len(df)} berita!")
+                            st.balloons()
                 else:
                     st.error(f"❌ File harus memiliki kolom: {', '.join(required_columns)}")
                     st.info("Contoh format: No, URL, Judul, Text")
@@ -396,7 +423,7 @@ def main():
                 | 1 | https://... | Contoh Judul | Isi berita lengkap... |
                 """)
                 
-                # Tombol download contoh
+                # Tombol download contoh - FIXED VERSION
                 sample_df = pd.DataFrame({
                     'No': [1, 2],
                     'URL': ['https://example.com/berita1', 'https://example.com/berita2'],
@@ -404,9 +431,15 @@ def main():
                     'Text': ['Ini adalah isi berita contoh 1', 'Ini adalah isi berita contoh 2']
                 })
                 
+                # Convert to Excel in memory
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    sample_df.to_excel(writer, index=False)
+                excel_data = output.getvalue()
+                
                 st.download_button(
                     label="📥 Download Contoh Dataset",
-                    data=sample_df.to_excel(index=False),
+                    data=excel_data,
                     file_name="contoh_dataset_berita.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
@@ -475,7 +508,7 @@ def main():
                             st.markdown(f"""
                             <div class="result-card">
                                 <div class="result-title">{judul_singkat}</div>
-                                <div class="result-url">🔗 {row['URL'][:80]}...</div>
+                                <div class="result-url">🔗 {str(row['URL'])[:80]}...</div>
                             </div>
                             """, unsafe_allow_html=True)
                             
