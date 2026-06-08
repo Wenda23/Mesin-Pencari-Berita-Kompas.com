@@ -10,7 +10,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
 from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 import warnings
-from collections import Counter
+import io
 
 warnings.filterwarnings('ignore')
 
@@ -217,27 +217,11 @@ if not st.session_state.data_loaded:
             st.session_state.total_berita = len(df)
             st.rerun()
 
-# ==================== SIDEBAR (DIPERKECIL/DIHAPUS) ====================
-with st.sidebar:
-    st.header("⚙️ Pengaturan")
-    
-    if st.session_state.data_loaded:
-        # Hanya tampilkan jumlah berita saja (tanpa tips)
-        st.metric("📊 Jumlah Berita", f"{st.session_state.total_berita}")
-        
-        st.markdown("---")
-        
-        # Tombol reset data
-        if st.button("🔄 Reset Data", use_container_width=True):
-            st.session_state.data_loaded = False
-            st.cache_resource.clear()
-            st.rerun()
-    
-    st.markdown("---")
-    st.caption("© 2024 Mesin Pencari Berita")
-
 # ==================== MAIN CONTENT ====================
 if st.session_state.data_loaded:
+    # Tampilkan jumlah berita di bagian atas
+    st.caption(f"📊 {st.session_state.total_berita} berita terindex")
+    
     # Search box
     st.markdown("### 🔎 Cari Berita")
     
@@ -337,7 +321,6 @@ else:
         'Text': ['Isi berita lengkap contoh 1...', 'Isi berita lengkap contoh 2...']
     })
     
-    import io
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         sample_df.to_excel(writer, index=False)
